@@ -1,0 +1,10 @@
+.venv/
+.aider/
+build/
+out/
+.vscode/
+.vs/
+.aider*
+*.pyc
+__pycache__
+docs/doxygen
