@@ -1,0 +1,80 @@
+    /* 
+    void build_update_list(
+        const TransformNode* nodes,
+        uint32_t node_count,
+        uint32_t* out_list,
+        uint32_t& out_count
+    )
+    {
+        out_count = 0;
+
+        // Start from roots to guarantee correct ordering
+        for (uint32_t i = 0; i < node_count; ++i)
+        {
+            if (nodes[i].parent == TransformNode::INVALID_NODE)
+            {
+                dfs_build_update_list(nodes, i, out_list, out_count);
+            }
+        }
+    }
+
+    void update_animated(
+        TransformNode* nodes,
+        const uint32_t* update_list,
+        uint32_t count,
+        uint32_t current_frame
+    )
+    {
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            const uint32_t idx = update_list[i];
+            TransformNode& n = nodes[idx];
+
+            // Parent is guaranteed to be processed earlier in the list
+            if (n.parent != TransformNode::INVALID_NODE)
+            {
+                const TransformNode& p = nodes[n.parent];
+                n.world = compute_world(p.world, n.local);
+            }
+            else
+            {
+                // Root animated node
+                n.world = n.local;
+            }
+
+            // Stamp
+            n.last_updated_frame = current_frame;
+        }
+    }
+    */
+
+
+    namespace
+{
+    using namespace wz::scene;
+
+    inline void dfs_build_update_list(
+        const TransformNode* nodes,
+        uint32_t node,
+        uint32_t* out_list,
+        uint32_t& out_count
+    )
+    {
+        const TransformNode& n = nodes[node];
+
+        // Emit only animated nodes
+        if (n.motion_type == TransformNode::MotionType::Animated)
+        {
+            out_list[out_count++] = node;
+        }
+
+        // Traverse children regardless (ordering matters)
+        uint32_t child = n.first_child;
+        while (child != TransformNode::INVALID_NODE)
+        {
+            dfs_build_update_list(nodes, child, out_list, out_count);
+            child = nodes[child].next_sibling;
+        }
+    }
+
+    }

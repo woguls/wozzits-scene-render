@@ -33,21 +33,41 @@ Each stage has a strict responsibility and must not depend on later stages.
 # 1. Scene Layer
 
 The Scene layer defines **what exists in the world**.
+The Scene layer defines a hierarchical transform structure of objects in space.
+It is a pure data layer. It has no rendering knowledge.
 
 ## Responsibilities
 
-- Hierarchical transform graph (DAG)
-- Object definitions (mesh, splat, etc.)
+- Hierarchical transform graph (tree or forest, not a general DAG)
 - Parent-child spatial relationships
-- Local transform ownership
+- Local transform storage (authoritative input)
+- Cached world transforms (derived data)
+- Explicit update orchestration (CPU-side)
+
+## Critical structural invariant
+
+The scene graph is a forest of trees (not a general DAG)
+
+Each node:
+- has at most one parent
+- may have multiple children
+- contains no cycles
 
 ## Key Concept: TransformNode
 
+# TransformNode (formal contract)
+
 Each node stores:
-- local transform (authoritative input)
-- parent index
-- cached world transform
-- versioning for change tracking
+- Input state (authoritative)
+- local → user-defined transform
+- Hierarchy state
+- parent → single parent index or INVALID_NODE
+- first_child
+- next_sibling
+- Derived state (cached)
+- world → computed transform (NOT authoritative)
+- Update tracking
+- last_updated_frame → used ONLY for update scheduling correctness
 
 The scene is **not render-aware**. It contains no knowledge of:
 - draw calls
