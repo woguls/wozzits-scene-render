@@ -72,6 +72,7 @@ endif()
 
 
 add_library(scene_render)
+add_library(scene_render::scene_render ALIAS scene_render)
 
 target_link_libraries(scene_render PUBLIC
      algo_math::algo_math)
