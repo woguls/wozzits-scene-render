@@ -40,7 +40,7 @@ namespace wz::scene {
     // Unconditional: used for animated subgraphs or first-frame initialization.
     // Roots use their local transform as world (no parent).
 
-    void propagate_all(SceneGraph& g)
+    inline void propagate_all(SceneGraph& g)
     {
         for (NodeHandle n : topo_order(g)) {
             TransformNode& node = const_cast<TransformNode&>(node_data(g, n));
@@ -86,7 +86,7 @@ namespace wz::scene {
     // Runs in topo order so parents are always evaluated before children.
     // Caller provides scratch buffer.
 
-    std::span<NodeHandle> collect_dirty_roots(
+    inline std::span<NodeHandle> collect_dirty_roots(
         const SceneGraph& g,
         uint32_t              current_frame,
         std::span<NodeHandle> scratch)
@@ -118,7 +118,7 @@ namespace wz::scene {
     // Uses sink-based BFS for natural subtree containment — BFS from a
     // dirty root visits exactly that subtree.
 
-    void update_static(
+    inline void update_static(
         SceneGraph& g,
         std::span<const NodeHandle> dirty_roots,
         uint32_t                    current_frame)
@@ -152,7 +152,7 @@ namespace wz::scene {
     // Returns all animated nodes in topo order — parents always before children.
     // Caller provides scratch buffer.
 
-    std::span<NodeHandle> build_animated_list(
+    inline std::span<NodeHandle> build_animated_list(
         const SceneGraph& g,
         std::span<NodeHandle> scratch)
     {
@@ -190,7 +190,7 @@ namespace wz::scene {
     // Propagates transforms for all animated nodes.
     // List must be in topo order (use build_animated_list).
 
-    void update_animated(
+    inline void update_animated(
         SceneGraph& g,
         std::span<const NodeHandle> animated_list,
         uint32_t                    current_frame)
