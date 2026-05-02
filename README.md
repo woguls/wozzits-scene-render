@@ -128,7 +128,7 @@ std::vector<RenderableDescriptor> build_descriptors()
 ### 3. Propagate transforms and compile
 
 ```cpp
-#include <scene/scene_compiler.h>
+#include <scene/compile/scene_compiler.h>
 
 ViewData make_camera()
 {
@@ -162,8 +162,8 @@ No scene graph exists beyond this point.
 ### 4. Build RenderIR and RenderFrame
 
 ```cpp
-#include <render/render_ir.h>
-#include <render/render_frame.h>
+#include <render/ir/render_ir.h>
+#include <render/frame/render_frame.h>
 
 auto ir    = build_render_ir(compiled.scene);
 auto frame = build_frame(ir, compiled.scene);
@@ -176,7 +176,7 @@ sorted by material within the opaque pipeline.
 
 ```cpp
 // Stub backend — replace with your Vulkan / Metal / DX12 implementation.
-#include <render/stub_backend.h>
+#include <render/backend/stub_backend.h>
 
 auto result = wz::render::backend::submit(frame.frame);
 
