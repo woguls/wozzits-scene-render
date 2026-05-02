@@ -1,253 +1,287 @@
-Render and scene stuff for the wozzits experimental engine
+# wozzits render-scene
 
-# Render–Scene Architecture
-
-This repository defines a self-contained **CPU-side rendering compiler architecture**.  
-It is split into two tightly defined domains:
-
-- **Scene**: hierarchical authoring and spatial structure
-- **Render**: flattened execution pipeline for drawing
-
-The system is designed around a strict multi-stage compilation flow that converts a scene graph into a fully ordered, render-ready frame.
+A CPU-side rendering compiler architecture for experimental game engines.
+The library converts a hierarchical scene graph into a fully ordered,
+render-ready frame through a series of well-defined, independently testable stages.
 
 ---
 
-# High-Level Pipeline
-Scene (hierarchical graph)
-↓
-Scene Compilation (flattening + transform resolution)
-↓
-RenderIR (render-facing intermediate representation)
-↓
-FrameBuilder (culling, sorting, binning)
-↓
-RenderFrame (execution-ready draw structure)
-↓
-Backend submission (GPU)
+## Architecture
 
+Data moves forward through five stages. No stage depends on a later one.
 
-Each stage has a strict responsibility and must not depend on later stages.
-
----
-
-# 1. Scene Layer
-
-The Scene layer defines **what exists in the world**.
-The Scene layer defines a hierarchical transform structure of objects in space.
-It is a pure data layer. It has no rendering knowledge.
-
-## Responsibilities
-
-- Hierarchical transform graph (tree or forest, not a general DAG)
-- Parent-child spatial relationships
-- Local transform storage (authoritative input)
-- Cached world transforms (derived data)
-- Explicit update orchestration (CPU-side)
-
-## Critical structural invariant
-
-The scene graph is a forest of trees (not a general DAG)
-
-Each node:
-- has at most one parent
-- may have multiple children
-- contains no cycles
-
-## Key Concept: TransformNode
-
-# TransformNode (formal contract)
-
-Each node stores:
-- Input state (authoritative)
-- local → user-defined transform
-- Hierarchy state
-- parent → single parent index or INVALID_NODE
-- first_child
-- next_sibling
-- Derived state (cached)
-- world → computed transform (NOT authoritative)
-- Update tracking
-- last_updated_frame → used ONLY for update scheduling correctness
-
-The scene is **not render-aware**. It contains no knowledge of:
-- draw calls
-- GPU state
-- passes
-- sorting
-- culling
-
-It is purely a spatial and logical representation.
+```
+PolytreeStorage<TransformNode>     scene graph — spatial hierarchy
+        ↓  compile() / update_view()
+CompiledScene                      flat boundary — no hierarchy beyond this point
+        ↓  build_render_ir()
+RenderIR                           sorted draw references — backend agnostic
+        ↓  build_frame()
+RenderFrame                        ordered draw commands — ready for submission
+        ↓  submit()
+Backend                            GPU command encoding
+```
 
 ---
 
-# 2. Scene Compilation Layer
+## Namespaces
 
-This layer is the **critical boundary between Scene and Render**.
-
-## Purpose
-
-Convert hierarchical scene data into a flat, renderable form.
-
-## Responsibilities
-
-- Resolve transform hierarchy → world space
-- Expand objects into render primitives
-- Flatten scene graph
-- Normalize different object types (mesh, splat, etc.)
-
-## Output
-
-The result is a **CompiledScene**, which is the only structure passed into the render system.
+| Namespace | Contents |
+|---|---|
+| `wz::core::graph` | DAG, Polytree, traversal, graph algorithms |
+| `wz::core::algo::pipeline` | map / filter / reduce, sink protocol |
+| `wz::scene` | TransformNode, scene graph, compiler |
+| `wz::render` | RenderIR, RenderFrame, FrameBuilder |
+| `wz::render::backend` | Stub backend — replace with your GPU backend |
 
 ---
 
-# 3. CompiledScene (Boundary Contract)
+## Render pipelines
 
-CompiledScene is the **single shared contract** between Scene and Render.
+Each pipeline defines its own sort rules, data shape, and execution model.
+Classification happens at compile time — the render layer never inspects object types.
 
-It contains only flat, render-agnostic data:
+| Pipeline | Sort | Typical use |
+|---|---|---|
+| `OpaqueGeometry` | by material, ascending | static meshes, terrain |
+| `Splat` | depth, back-to-front | Gaussian splats |
+| `TransparentGeometry` | depth, back-to-front | glass, water, foliage |
+| `Particle` | depth, back-to-front | fire, smoke, debris |
 
-- Compiled primitives
-- Materials
-- Lights
-- Bounds
-- View data
-
-## Key Rule
-
-> No hierarchy, no transforms, no scene graph exists beyond this point.
-
-All spatial relationships are already resolved.
+Submission order is fixed: **opaque → splat → transparent → particle**.
 
 ---
 
-# 4. Render Layer
+## Quick start — a static opaque scene
 
-The Render layer consumes only CompiledScene.
+This example builds a scene with three opaque mesh objects, compiles it,
+sorts it, and submits it through the stub backend.
 
-It is responsible for transforming static data into an optimized execution plan.
+### 1. Build the scene graph
 
-## 4.1 RenderIR Construction
+```cpp
+#include <scene/scene_graph.h>
 
-Transforms:
+using namespace wz::scene;
+using namespace wz::core::graph;
+using namespace wz::math;
 
-CompiledScene → RenderIR
+// Helper — column-major Mat4 translation along Z
+Mat4 translation_z(float z)
+{
+    Mat4 m = mat4_identity();
+    m.m[14] = z;
+    return m;
+}
 
-Responsibilities:
-- Organize primitives for rendering
-- Assign pass participation
-- Generate draw references
-- Prepare sort keys
+SceneStorage build_test_scene()
+{
+    SceneBuilder b;
 
-RenderIR is still CPU-side and mutable during pipeline execution.
+    // Root node — spatial anchor, not renderable
+    TransformNode root{};
+    root.local = mat4_identity();
+    auto root_h = add_node(b, root);
+
+    // Three renderable children at different depths
+    for (int i = 0; i < 3; ++i) {
+        TransformNode node{};
+        node.local = translation_z(static_cast<float>(i + 1) * 2.f);
+        node.flags = TransformNodeFlag::RenderDomain;
+        auto h = add_node(b, node);
+        add_edge(b, root_h, h);
+    }
+
+    auto result = build(std::move(b));
+    assert(result.has_value()); // fails only if a cycle was introduced
+    return std::move(*result);
+}
+```
+
+### 2. Describe renderables
+
+`RenderableDescriptor` maps each scene node to asset handles and a pipeline.
+It lives parallel to the node array, indexed by `NodeHandle`.
+
+```cpp
+std::vector<RenderableDescriptor> build_descriptors()
+{
+    // One entry per node: root + 3 children = 4 entries
+    std::vector<RenderableDescriptor> descs(4);
+
+    // Root — not renderable
+    descs[0] = { RenderPipeline::None };
+
+    // Children — opaque geometry, each with a distinct mesh and material
+    descs[1] = { RenderPipeline::OpaqueGeometry, /*mesh=*/0u, /*material=*/0u,
+                 /*local_bounds=*/{ Vec3{-0.5f,-0.5f,-0.5f},
+                                    Vec3{ 0.5f, 0.5f, 0.5f} } };
+    descs[2] = { RenderPipeline::OpaqueGeometry, 1u, 1u,
+                 { Vec3{-0.5f,-0.5f,-0.5f}, Vec3{0.5f,0.5f,0.5f} } };
+    descs[3] = { RenderPipeline::OpaqueGeometry, 2u, 2u,
+                 { Vec3{-0.5f,-0.5f,-0.5f}, Vec3{0.5f,0.5f,0.5f} } };
+
+    return descs;
+}
+```
+
+### 3. Propagate transforms and compile
+
+```cpp
+#include <scene/scene_compiler.h>
+
+ViewData make_camera()
+{
+    ViewData v{};
+    v.view            = mat4_identity();
+    v.view.m[14]      = -5.f;   // camera 5 units back along Z
+    v.projection      = mat4_identity();
+    v.view_projection = mat4_identity();
+    v.camera_position = Vec3{ 0.f, 0.f, 5.f };
+    return v;
+}
+
+// After building the scene, propagate world transforms.
+// For a fully static scene this is called once after build().
+// For scenes with animated nodes, call update_static() or update_animated()
+// each frame instead.
+
+auto scene   = build_test_scene();
+auto descs   = build_descriptors();
+auto view    = make_camera();
+
+propagate_all(scene.polytree);
+
+auto compiled = compile(scene.polytree, descs, /*lights=*/{}, view);
+```
+
+`compiled.scene` is now a flat `CompiledScene` containing one
+`OpaqueGeometryPrimitive` per visible, renderable node.
+No scene graph exists beyond this point.
+
+### 4. Build RenderIR and RenderFrame
+
+```cpp
+#include <render/render_ir.h>
+#include <render/render_frame.h>
+
+auto ir    = build_render_ir(compiled.scene);
+auto frame = build_frame(ir, compiled.scene);
+```
+
+`frame.frame.commands` is a flat span of `DrawCommand` in submission order,
+sorted by material within the opaque pipeline.
+
+### 5. Submit to your backend
+
+```cpp
+// Stub backend — replace with your Vulkan / Metal / DX12 implementation.
+#include <render/stub_backend.h>
+
+auto result = wz::render::backend::submit(frame.frame);
+
+// result.log contains one human-readable entry per draw command.
+// result.opaque_count() == 3
+```
+
+To implement a real backend, iterate `frame.frame.commands` linearly:
+
+```cpp
+for (const auto& cmd : frame.frame.commands) {
+    switch (cmd.stage) {
+        case PipelineStage::OpaqueGeometry:
+            // cmd.mesh     — index into your mesh asset table
+            // cmd.material — index into your material asset table
+            // cmd.world    — Mat4, column-major, float[16]
+            // encode your draw call here
+            break;
+
+        case PipelineStage::Splat:
+            // cmd.splat_position — Vec3 world space center
+            // cmd.splat_scale    — Vec3 per-axis gaussian scale
+            // cmd.splat_rotation — Vec4 quaternion
+            // cmd.splat_color    — Vec3 RGB
+            // cmd.splat_opacity  — float
+            // cmd.splat_depth    — float, view space, for your alpha sort
+            break;
+
+        case PipelineStage::TransparentGeometry:
+        case PipelineStage::Particle:
+            // same fields as OpaqueGeometry
+            break;
+    }
+}
+```
 
 ---
 
-## 4.2 FrameBuilder
+## Handling a moving camera
 
-Transforms:
+When the camera moves but the scene does not change structurally,
+call `update_view()` and `update_render_ir()` instead of recompiling:
 
-RenderIR → RenderFrame
+```cpp
+// Every frame the camera moves:
+ViewData new_view = get_current_camera();
 
-Pipeline stages:
-- Culling
-- Classification
-- Sorting
-- Binning into passes
+update_view(compiled, new_view);       // recomputes depth values only
+update_render_ir(ir);                  // re-sorts view-dependent pipelines
 
-This stage produces the final ordered execution structure.
+auto frame  = build_frame(ir, compiled.scene);
+auto result = backend::submit(frame.frame);
+```
 
----
-
-## 4.3 RenderFrame
-
-RenderFrame is the **final CPU-side representation before GPU submission**.
-
-It contains:
-- Ordered draw lists
-- Render passes
-- Visible primitive references
-
-It is treated as immutable after construction.
+`compile()` is only called again when the scene structure changes —
+nodes added, removed, or reparented.
 
 ---
 
-# 5. Backend Layer
+## Key invariants
 
-The backend consumes RenderFrame and is responsible for:
-- GPU command encoding
-- draw submission
-- API-specific execution
+**Scene layer**
+- Every node has at most one parent (`Polytree` enforces this at build time).
+- `TransformNode::world` is derived data — never set it directly, use `set_local()`.
+- The scene layer contains no rendering knowledge.
 
-This layer is intentionally isolated from Scene and RenderIR logic.
+**CompiledScene boundary**
+- No scene graph handles, no hierarchy, no `NodeHandle` exists beyond this point.
+- All spatial relationships are fully resolved into world-space transforms.
+- `CompiledScene` is immutable after `compile()` except for depth values
+  updated by `update_view()`.
 
----
+**RenderIR**
+- Draw references are indices into `CompiledScene` spans — no data is copied during sort.
+- Opaque sort is stable across frames (material-based). Depth sorts change with the camera.
 
-# Design Principles
-
-## 1. Strict Stage Isolation
-
-Each stage has a single responsibility:
-Scene → Compile → RenderIR → Frame → Backend
-
-No stage may depend on a later stage.
-
----
-
-## 2. Single Boundary Contract
-
-The only shared structure between Scene and Render is:
-CompiledScene
-
-This ensures a clean separation between:
-- hierarchical representation
-- execution representation
+**RenderFrame**
+- Submission order is fixed: opaque → splat → transparent → particle.
+- `DrawCommand` is self-contained — the backend never touches `CompiledScene` or `RenderIR`.
 
 ---
 
-## 3. Meshes and Splats are Unified
+## Adding a Gaussian Splat node
 
-At compile time:
-- Meshes and splats are converted into a unified primitive form
-- Differences are resolved during compilation
-- Render system treats all primitives uniformly
+```cpp
+TransformNode splat_node{};
+splat_node.local = translation_z(3.f);
+splat_node.flags = TransformNodeFlag::RenderDomain;
+auto splat_h = add_node(b, splat_node);
+add_edge(b, root_h, splat_h);
 
-No special-case logic exists in FrameBuilder.
+// In your descriptor table:
+descs[splat_h] = {
+    RenderPipeline::Splat,
+    INVALID_MESH,
+    INVALID_MATERIAL,
+    {},  // no mesh bounds
+    SplatDescriptor {
+        .scale    = Vec3{ 0.1f, 0.2f, 0.1f },
+        .rotation = Vec4{ 0.f, 0.f, 0.f, 1.f },
+        .color    = Vec3{ 1.f, 0.8f, 0.6f },
+        .opacity  = 0.9f,
+    }
+};
+```
 
----
-
-## 4. Render is a Compiler
-
-The system is not immediate-mode.
-
-It behaves as a deterministic compiler pipeline:
-
-Scene → compiled representation → execution plan → GPU submission
-
----
-
-## 5. Deterministic Data Flow
-
-Data only moves forward through stages.
-
-No stage:
-- queries Scene after compilation
-- reconstructs hierarchy
-- reinterprets object types
-
-Everything is flattened before rendering begins.
-
----
-
-# Summary
-
-This architecture defines a **render compiler system** with two core domains:
-
-- Scene: hierarchical description of world state
-- Render: flattened, optimized execution pipeline
-
-The system prioritizes:
-- strict separation of concerns
-- predictable data flow
-- unified primitive representation
-- compile-time resolution of scene complexity
+Splat depth is recomputed automatically by `update_view()` every frame.
+Splats are always submitted after opaque geometry and before transparent geometry.
